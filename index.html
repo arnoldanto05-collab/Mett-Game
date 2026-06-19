@@ -426,10 +426,25 @@ var AudioEngine = (function(){
       }catch(e){ return false; }
     }
     if(ctx.state === 'suspended'){
-      var p = ctx.resume();
-      if(p && p.catch) p.catch(function(){});
+      try{
+        var p = ctx.resume();
+        if(p && p.then){ p.then(function(){}).catch(function(){}); }
+      }catch(e){}
+      /* iOS Safari sometimes needs a silent buffer played to truly wake the
+         context, even after resume() resolves. This is a known, harmless
+         workaround that costs nothing on browsers that don't need it. */
+      try{
+        var silentBuf = ctx.createBuffer(1, 1, 22050);
+        var silentSrc = ctx.createBufferSource();
+        silentSrc.buffer = silentBuf;
+        silentSrc.connect(ctx.destination);
+        silentSrc.start(0);
+      }catch(e){}
     }
     return true;
+  }
+  function isRunning(){
+    return !!ctx && ctx.state === 'running';
   }
 
   function tone(freq,type,dur,vol,delay){
@@ -610,6 +625,7 @@ var AudioEngine = (function(){
 
   return {
     unlock: unlock,
+    isRunning: isRunning,
     SFX: SFX,
     startMusic: startMusic,
     stopMusic: stopMusic,
@@ -1117,10 +1133,16 @@ function initGame(){
 function startGame(){
   cancelAnimationFrame(animId);
   AudioEngine.unlock();
-  if(AudioEngine.isSoundOn()) AudioEngine.startMusic();
   resize();
   initGame();
-  AudioEngine.SFX.start();
+  /* Give the browser one frame to actually transition the AudioContext
+     out of 'suspended' before we schedule any sound. Calling SFX/music
+     in the very same synchronous tick as unlock() is the classic cause
+     of "no sound on first interaction" bugs on mobile Safari/Chrome. */
+  requestAnimationFrame(function(){
+    if(AudioEngine.isSoundOn()) AudioEngine.startMusic();
+    AudioEngine.SFX.start();
+  });
   animId=requestAnimationFrame(loop);
 }
 
@@ -1200,8 +1222,17 @@ g('sound-btn').addEventListener('click', function(){
   AudioEngine.setSoundOn(newState);
   this.innerHTML = newState ? '&#128266;' : '&#128263;';
   if(newState){
-    AudioEngine.unlock();
-    if(active) AudioEngine.startMusic();
+    var ok=AudioEngine.unlock();
+    if(!ok){
+      /* Web Audio API not available at all on this browser */
+      this.innerHTML='&#9888;\uFE0F';
+      this.title='Audio wird auf diesem Ger\u00E4t nicht unterst\u00FCtzt';
+      return;
+    }
+    requestAnimationFrame(function(){
+      AudioEngine.SFX.catch();
+      if(active) AudioEngine.startMusic();
+    });
   }
 });
 
